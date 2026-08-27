@@ -4,6 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>invoiceX</title>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <style>
   :root{
     --paper:#FAF7F0;
@@ -252,13 +255,47 @@
     .head-row{flex-direction:column;}
     .invoice-tag{text-align:left;}
   }
+  .btn-drive{position:relative;}
+  .btn-drive.connected{background:var(--accent-soft); border-color:var(--accent); color:var(--accent);}
+  .toast{
+    position:fixed; bottom:24px; left:50%; transform:translateX(-50%);
+    background:var(--ink); color:#fff; padding:10px 18px; border-radius:6px;
+    font-size:13px; z-index:999; opacity:0; pointer-events:none; transition:opacity .25s;
+  }
+  .toast.show{opacity:1;}
+  .history-panel{
+    max-width:820px; margin:0 auto 20px; background:var(--card);
+    border:1px solid var(--line); border-radius:6px; padding:20px 24px; display:none;
+  }
+  .history-panel.open{display:block;}
+  .history-panel h3{font-size:15px; margin-bottom:14px;}
+  .history-table{width:100%; border-collapse:collapse; font-size:13px;}
+  .history-table th{
+    text-align:left; font-size:11px; text-transform:uppercase; letter-spacing:.05em;
+    color:var(--ink-soft); padding:0 8px 8px; border-bottom:1px solid var(--ink);
+  }
+  .history-table td{padding:8px; border-bottom:1px solid var(--line); vertical-align:middle;}
+  .history-table td.num{text-align:right; font-family:'JetBrains Mono',monospace;}
+  .status-pill{
+    font-size:11px; padding:2px 8px; border-radius:10px; font-weight:600;
+    text-transform:uppercase; letter-spacing:.03em;
+  }
+  .status-pill.draft{background:#EFE7D0; color:#8A6D1D;}
+  .status-pill.sent{background:var(--accent-soft); color:var(--accent);}
+  .history-empty{color:var(--ink-soft); font-size:13px; padding:8px 0;}
+  .link-btn{
+    border:none; background:transparent; color:var(--accent); cursor:pointer;
+    font-size:12px; font-weight:600; padding:2px 4px;
+  }
+  .link-btn:hover{text-decoration:underline;}
+  .link-btn.danger{color:var(--danger);}
 </style>
 </head>
 <body>
 
 <div class="toolbar">
   <span class="toolbar-title">invoiceX — no tax, keep it simple</span>
-  <div style="display:flex; gap:10px;">
+  <div style="display:flex; gap:10px; flex-wrap:wrap;">
     <select id="currency">
       <option value="₹">₹ INR</option>
       <option value="$">$ USD</option>
@@ -266,8 +303,30 @@
       <option value="£">£ GBP</option>
     </select>
     <button class="btn" onclick="addRow()">+ Add line item</button>
-    <button class="btn btn-primary" onclick="window.print()">Download / print PDF</button>
+    <button class="btn" id="driveBtn" onclick="toggleDriveConnection()">Connect Google Drive</button>
+    <button class="btn" onclick="toggleHistory()">History</button>
+    <button class="btn" onclick="saveDraft()">Save draft</button>
+    <button class="btn btn-primary" onclick="handleDownloadPdf(event)">Download / print PDF</button>
   </div>
+</div>
+
+<div class="history-panel" id="historyPanel">
+  <h3>Invoice history</h3>
+  <table class="history-table">
+    <thead>
+      <tr>
+        <th>Invoice #</th>
+        <th>Client</th>
+        <th>Date</th>
+        <th style="text-align:right;">Total</th>
+        <th>Status</th>
+        <th>Delivered</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody id="historyBody"></tbody>
+  </table>
+  <div class="history-empty" id="historyEmpty" style="display:none;">No invoices yet — save a draft or download a PDF to start tracking history.</div>
 </div>
 
 <div class="sheet" id="sheet">
@@ -404,6 +463,322 @@ document.getElementById('dueDate').valueAsDate = due;
 // seed with 2 blank rows
 addRow();
 addRow();
+
+/* ---------- state capture / restore ---------- */
+
+function getState(){
+  const items = Array.from(lineItemsEl.querySelectorAll('tr')).map(row => {
+    const inputs = row.querySelectorAll('input');
+    return { desc: inputs[0].value, qty: inputs[1].value, rate: inputs[2].value };
+  });
+  return {
+    bizName: document.getElementById('bizName').value,
+    bizAddr: document.getElementById('bizAddr').value,
+    bizContact: document.getElementById('bizContact').value,
+    invNum: document.getElementById('invNum').value,
+    fromName: document.getElementById('fromName').value,
+    fromGSTless: document.getElementById('fromGSTless').value,
+    toName: document.getElementById('toName').value,
+    toAddr: document.getElementById('toAddr').value,
+    toContact: document.getElementById('toContact').value,
+    issueDate: document.getElementById('issueDate').value,
+    dueDate: document.getElementById('dueDate').value,
+    currency: currencyEl.value,
+    discount: document.getElementById('discount').value,
+    notes: document.getElementById('notes').value,
+    items
+  };
+}
+
+function loadState(data){
+  document.getElementById('bizName').value = data.bizName || '';
+  document.getElementById('bizAddr').value = data.bizAddr || '';
+  document.getElementById('bizContact').value = data.bizContact || '';
+  document.getElementById('invNum').value = data.invNum || '';
+  document.getElementById('fromName').value = data.fromName || '';
+  document.getElementById('fromGSTless').value = data.fromGSTless || '';
+  document.getElementById('toName').value = data.toName || '';
+  document.getElementById('toAddr').value = data.toAddr || '';
+  document.getElementById('toContact').value = data.toContact || '';
+  document.getElementById('issueDate').value = data.issueDate || '';
+  document.getElementById('dueDate').value = data.dueDate || '';
+  currencyEl.value = data.currency || '₹';
+  document.getElementById('discount').value = data.discount || 0;
+  document.getElementById('notes').value = data.notes || '';
+  lineItemsEl.innerHTML = '';
+  (data.items && data.items.length ? data.items : [{}, {}]).forEach(it => addRow(it.desc || '', it.qty ?? 1, it.rate ?? 0));
+  calcTotals();
+  closeHistory();
+}
+
+function currentTotal(){
+  const state = getState();
+  const subtotal = state.items.reduce((sum, it) => sum + (parseFloat(it.qty)||0) * (parseFloat(it.rate)||0), 0);
+  const discount = parseFloat(state.discount) || 0;
+  return Math.max(subtotal - discount, 0);
+}
+
+/* ---------- toast ---------- */
+
+let toastTimer;
+function showToast(msg){
+  let el = document.getElementById('toast');
+  if(!el){
+    el = document.createElement('div');
+    el.id = 'toast';
+    el.className = 'toast';
+    document.body.appendChild(el);
+  }
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('show'), 3200);
+}
+
+/* ---------- history (localStorage) ---------- */
+
+const HISTORY_KEY = 'invoicex_history';
+
+function getHistory(){
+  try{ return JSON.parse(localStorage.getItem(HISTORY_KEY)) || []; }
+  catch(e){ return []; }
+}
+
+function saveHistory(list){
+  localStorage.setItem(HISTORY_KEY, JSON.stringify(list));
+  renderHistory();
+}
+
+function upsertHistoryEntry(status){
+  const state = getState();
+  const list = getHistory();
+  const existing = list.find(e => e.invNum === state.invNum);
+  const entry = {
+    id: existing ? existing.id : (Date.now() + '-' + Math.random().toString(36).slice(2)),
+    invNum: state.invNum || '(no number)',
+    client: state.toName || '(no client)',
+    date: state.issueDate || '',
+    total: currentTotal(),
+    currency: state.currency,
+    status,
+    delivered: existing ? existing.delivered : false,
+    data: state
+  };
+  if(existing) Object.assign(existing, entry);
+  else list.unshift(entry);
+  saveHistory(list);
+  return entry;
+}
+
+function saveDraft(){
+  upsertHistoryEntry('draft');
+  showToast('Draft saved.');
+}
+
+function loadHistoryEntry(id){
+  const entry = getHistory().find(e => e.id === id);
+  if(entry) loadState(entry.data);
+}
+
+function deleteHistoryEntry(id){
+  saveHistory(getHistory().filter(e => e.id !== id));
+}
+
+function setDelivered(id, delivered){
+  const list = getHistory();
+  const entry = list.find(e => e.id === id);
+  if(entry){ entry.delivered = delivered; saveHistory(list); }
+}
+
+function renderHistory(){
+  const list = getHistory();
+  const body = document.getElementById('historyBody');
+  const empty = document.getElementById('historyEmpty');
+  body.innerHTML = '';
+  empty.style.display = list.length ? 'none' : 'block';
+  list.forEach(entry => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${escapeHtml(entry.invNum)}</td>
+      <td>${escapeHtml(entry.client)}</td>
+      <td>${escapeHtml(entry.date)}</td>
+      <td class="num">${escapeHtml(entry.currency)}${fmt(entry.total)}</td>
+      <td><span class="status-pill ${entry.status}">${entry.status === 'draft' ? 'Draft' : 'Sent'}</span></td>
+      <td><input type="checkbox" ${entry.delivered ? 'checked' : ''} ${entry.status === 'draft' ? 'disabled' : ''} onchange="setDelivered('${entry.id}', this.checked)"></td>
+      <td>
+        <button class="link-btn" onclick="loadHistoryEntry('${entry.id}')">Load</button>
+        <button class="link-btn danger" onclick="deleteHistoryEntry('${entry.id}')">Delete</button>
+      </td>
+    `;
+    body.appendChild(tr);
+  });
+}
+
+function escapeHtml(str){
+  return String(str).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function toggleHistory(){
+  const panel = document.getElementById('historyPanel');
+  panel.classList.toggle('open');
+  if(panel.classList.contains('open')) renderHistory();
+}
+
+function closeHistory(){
+  document.getElementById('historyPanel').classList.remove('open');
+}
+
+renderHistory();
+
+/* ---------- Google Drive connection (client-side OAuth) ---------- */
+
+const DRIVE_CLIENT_ID_KEY = 'invoicex_gdrive_client_id';
+const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
+let driveTokenClient = null;
+let driveAccessToken = null;
+let driveTokenExpiry = 0;
+
+function isDriveConfigured(){ return !!localStorage.getItem(DRIVE_CLIENT_ID_KEY); }
+function isDriveConnected(){ return driveAccessToken && Date.now() < driveTokenExpiry; }
+
+function updateDriveButton(){
+  const btn = document.getElementById('driveBtn');
+  if(isDriveConnected()){
+    btn.textContent = 'Google Drive: Connected ✓';
+    btn.classList.add('connected');
+  } else {
+    btn.textContent = 'Connect Google Drive';
+    btn.classList.remove('connected');
+  }
+}
+
+function toggleDriveConnection(){
+  if(isDriveConnected()){
+    driveAccessToken = null;
+    driveTokenExpiry = 0;
+    updateDriveButton();
+    showToast('Disconnected from Google Drive.');
+    return;
+  }
+  let clientId = localStorage.getItem(DRIVE_CLIENT_ID_KEY);
+  if(!clientId){
+    clientId = prompt('Enter your Google OAuth Client ID to enable saving PDFs to your Google Drive.\n(Create one at console.cloud.google.com — APIs & Services > Credentials.)');
+    if(!clientId) return;
+    localStorage.setItem(DRIVE_CLIENT_ID_KEY, clientId.trim());
+    clientId = clientId.trim();
+  }
+  if(typeof google === 'undefined' || !google.accounts || !google.accounts.oauth2){
+    showToast('Google sign-in script not loaded yet — try again in a moment.');
+    return;
+  }
+  driveTokenClient = google.accounts.oauth2.initTokenClient({
+    client_id: clientId,
+    scope: DRIVE_SCOPE,
+    callback: (resp) => {
+      if(resp.error){
+        showToast('Google Drive connection failed: ' + resp.error);
+        return;
+      }
+      driveAccessToken = resp.access_token;
+      driveTokenExpiry = Date.now() + (resp.expires_in ? resp.expires_in * 1000 : 3300000);
+      updateDriveButton();
+      showToast('Connected to Google Drive.');
+    },
+  });
+  driveTokenClient.requestAccessToken({ prompt: isDriveConfigured() ? '' : 'consent' });
+}
+
+function resetDriveClientId(){
+  localStorage.removeItem(DRIVE_CLIENT_ID_KEY);
+  driveAccessToken = null;
+  driveTokenExpiry = 0;
+  updateDriveButton();
+}
+
+async function uploadPdfToDrive(blob, filename){
+  const metadata = { name: filename, mimeType: 'application/pdf' };
+  const form = new FormData();
+  form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
+  form.append('file', blob);
+  const res = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
+    method: 'POST',
+    headers: { Authorization: 'Bearer ' + driveAccessToken },
+    body: form
+  });
+  if(!res.ok){
+    const text = await res.text();
+    throw new Error('Drive upload failed (' + res.status + '): ' + text);
+  }
+  return res.json();
+}
+
+/* ---------- PDF generation + download + optional Drive save ---------- */
+
+async function generatePdfBlob(){
+  const sheet = document.getElementById('sheet');
+  const canvas = await html2canvas(sheet, { scale: 2, backgroundColor: '#ffffff' });
+  const imgData = canvas.toDataURL('image/png');
+  const { jsPDF } = window.jspdf;
+  const pdf = new jsPDF({ unit: 'pt', format: 'a4' });
+  const pageWidth = pdf.internal.pageSize.getWidth();
+  const pageHeight = pdf.internal.pageSize.getHeight();
+  const imgWidth = pageWidth;
+  const imgHeight = (canvas.height * imgWidth) / canvas.width;
+  let heightLeft = imgHeight;
+  let position = 0;
+  pdf.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight);
+  heightLeft -= pageHeight;
+  while(heightLeft > 0){
+    position = heightLeft - imgHeight;
+    pdf.addPage();
+    pdf.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight);
+    heightLeft -= pageHeight;
+  }
+  return pdf.output('blob');
+}
+
+async function handleDownloadPdf(event){
+  const btn = event ? event.target : null;
+  const originalLabel = btn ? btn.textContent : null;
+  if(btn){ btn.disabled = true; btn.textContent = 'Preparing PDF…'; }
+  try{
+    if(typeof html2canvas === 'undefined' || typeof window.jspdf === 'undefined'){
+      showToast('PDF library still loading — falling back to browser print.');
+      window.print();
+      return;
+    }
+    const state = getState();
+    const filename = (state.invNum || 'invoice').replace(/[^a-z0-9-_]+/gi, '_') + '.pdf';
+    const blob = await generatePdfBlob();
+
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+
+    upsertHistoryEntry('sent');
+
+    if(isDriveConnected()){
+      try{
+        await uploadPdfToDrive(blob, filename);
+        showToast('PDF downloaded and saved to Google Drive.');
+      }catch(err){
+        console.error(err);
+        showToast('PDF downloaded, but Google Drive upload failed.');
+      }
+    } else {
+      showToast('PDF downloaded. Connect Google Drive to also save it there.');
+    }
+  } finally {
+    if(btn){ btn.disabled = false; btn.textContent = originalLabel; }
+  }
+}
+
+updateDriveButton();
 </script>
 
 </body>
