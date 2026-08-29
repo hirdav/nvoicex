@@ -312,7 +312,7 @@
       <option value="€">€ EUR</option>
       <option value="£">£ GBP</option>
     </select>
-    <button class="btn" onclick="addRow()">+ Add line item</button>
+    <button class="btn" onclick="newInvoice()">+ New invoice</button>
     <button class="btn" id="driveBtn" onclick="toggleDriveConnection()">Connect Google Drive</button>
     <button class="btn" onclick="toggleHistory()">History</button>
     <button class="btn" onclick="saveDraft()">Save draft</button>
@@ -624,6 +624,46 @@ function upsertHistoryEntry(status){
 function saveDraft(){
   upsertHistoryEntry('draft');
   showToast('Draft saved.');
+}
+
+function hasInvoiceContent(state){
+  return !!(state.invNum || state.toName || state.items.some(it => it.desc || (parseFloat(it.qty) > 0) || (parseFloat(it.rate) > 0)));
+}
+
+function preserveCurrentInvoice(){
+  const state = getState();
+  if(!hasInvoiceContent(state)) return false;
+  const existing = getHistory().find(e => e.invNum === state.invNum);
+  upsertHistoryEntry(existing ? existing.status : 'draft');
+  return true;
+}
+
+function nextInvoiceNumber(curr){
+  const m = curr.match(/^(.*?)(\d+)(\D*)$/);
+  if(!m) return curr;
+  const [, prefix, num, suffix] = m;
+  return prefix + String(Number(num) + 1).padStart(num.length, '0') + suffix;
+}
+
+function newInvoice(){
+  const prevInvNum = document.getElementById('invNum').value;
+  const kept = preserveCurrentInvoice();
+  document.getElementById('invNum').value = prevInvNum ? nextInvoiceNumber(prevInvNum) : 'INV-0001';
+  document.getElementById('toName').value = '';
+  document.getElementById('toAddr').value = '';
+  document.getElementById('toContact').value = '';
+  document.getElementById('issueDate').value = formatDMY(new Date());
+  const due = new Date();
+  due.setDate(due.getDate() + 15);
+  document.getElementById('dueDate').value = formatDMY(due);
+  document.getElementById('discount').value = 0;
+  document.getElementById('notes').value = '';
+  lineItemsEl.innerHTML = '';
+  addRow();
+  addRow();
+  calcTotals();
+  closeHistory();
+  showToast(kept ? 'Previous invoice kept in history. New invoice started.' : 'New invoice started.');
 }
 
 function loadHistoryEntry(id){
