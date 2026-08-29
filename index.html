@@ -140,6 +140,16 @@
     margin-bottom:4px;
     font-weight:600;
   }
+  .date-input-wrap{position:relative;}
+  .date-input-wrap input[type="text"]{padding-right:24px;}
+  .date-pick-btn{
+    position:absolute; right:0; top:50%; transform:translateY(-50%);
+    background:none; border:none; cursor:pointer; font-size:13px; padding:2px 4px; line-height:1;
+  }
+  .hidden-date-picker{
+    position:absolute; opacity:0; width:1px; height:1px; padding:0; margin:0;
+    border:none; pointer-events:none; left:0; top:0;
+  }
   table{width:100%; border-collapse:collapse; margin-bottom:8px;}
   thead th{
     text-align:left;
@@ -247,7 +257,7 @@
     .toolbar{display:none;}
     .sheet{box-shadow:none; border:none; max-width:100%; padding:24px 32px;}
     input, textarea{border-bottom:none;}
-    .rm-btn, .add-row-btn{display:none;}
+    .rm-btn, .add-row-btn, .date-pick-btn{display:none;}
   }
   @media (max-width:640px){
     .two-col{grid-template-columns:1fr;}
@@ -359,11 +369,19 @@
   <div class="dates">
     <div class="date-field">
       <label>Issue date</label>
-      <input type="date" id="issueDate">
+      <div class="date-input-wrap">
+        <input type="text" id="issueDate" placeholder="DD/MM/YY" maxlength="8" inputmode="numeric" oninput="handleDateTyping(this)">
+        <button type="button" class="date-pick-btn" onclick="openDatePicker('issueDatePicker')" aria-label="Pick issue date">📅</button>
+        <input type="date" id="issueDatePicker" class="hidden-date-picker" tabindex="-1" onchange="syncDateFromPicker('issueDatePicker','issueDate')">
+      </div>
     </div>
     <div class="date-field">
       <label>Due date</label>
-      <input type="date" id="dueDate">
+      <div class="date-input-wrap">
+        <input type="text" id="dueDate" placeholder="DD/MM/YY" maxlength="8" inputmode="numeric" oninput="handleDateTyping(this)">
+        <button type="button" class="date-pick-btn" onclick="openDatePicker('dueDatePicker')" aria-label="Pick due date">📅</button>
+        <input type="date" id="dueDatePicker" class="hidden-date-picker" tabindex="-1" onchange="syncDateFromPicker('dueDatePicker','dueDate')">
+      </div>
     </div>
   </div>
 
@@ -453,12 +471,45 @@ function calcTotals(){
 
 currencyEl.addEventListener('change', calcTotals);
 
+/* ---------- date formatting: DD/MM/YY everywhere ---------- */
+
+function pad2(n){ return String(n).padStart(2, '0'); }
+
+function formatDMY(date){
+  return `${pad2(date.getDate())}/${pad2(date.getMonth()+1)}/${String(date.getFullYear()).slice(-2)}`;
+}
+
+function isoToDMY(iso){
+  if(!iso) return '';
+  const [y, m, d] = iso.split('-');
+  return `${d}/${m}/${y.slice(-2)}`;
+}
+
+function handleDateTyping(input){
+  let digits = input.value.replace(/[^\d]/g, '').slice(0, 6);
+  let out = digits;
+  if(digits.length > 4) out = digits.slice(0,2) + '/' + digits.slice(2,4) + '/' + digits.slice(4);
+  else if(digits.length > 2) out = digits.slice(0,2) + '/' + digits.slice(2);
+  input.value = out;
+}
+
+function openDatePicker(pickerId){
+  const picker = document.getElementById(pickerId);
+  if(picker.showPicker) picker.showPicker();
+  else picker.click();
+}
+
+function syncDateFromPicker(pickerId, textId){
+  const picker = document.getElementById(pickerId);
+  if(picker.value) document.getElementById(textId).value = isoToDMY(picker.value);
+}
+
 // set default dates
 const today = new Date();
-document.getElementById('issueDate').valueAsDate = today;
+document.getElementById('issueDate').value = formatDMY(today);
 const due = new Date();
 due.setDate(due.getDate()+15);
-document.getElementById('dueDate').valueAsDate = due;
+document.getElementById('dueDate').value = formatDMY(due);
 
 // seed with 2 blank rows
 addRow();
