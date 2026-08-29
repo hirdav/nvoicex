@@ -5,7 +5,6 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>invoiceX</title>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <style>
   :root{
@@ -805,26 +804,173 @@ async function uploadPdfToDrive(blob, filename){
 
 /* ---------- PDF generation + download + optional Drive save ---------- */
 
-async function generatePdfBlob(){
-  const sheet = document.getElementById('sheet');
-  const canvas = await html2canvas(sheet, { scale: 2, backgroundColor: '#ffffff' });
-  const imgData = canvas.toDataURL('image/png');
+function generatePdfBlob(){
+  const state = getState();
+  // jsPDF's built-in fonts have no glyph for ₹ (renders as a stray mark) — spell it out instead.
+  const pdfCurrency = state.currency === '₹' ? 'Rs. ' : state.currency;
   const { jsPDF } = window.jspdf;
   const pdf = new jsPDF({ unit: 'pt', format: 'a4' });
   const pageWidth = pdf.internal.pageSize.getWidth();
   const pageHeight = pdf.internal.pageSize.getHeight();
-  const imgWidth = pageWidth;
-  const imgHeight = (canvas.height * imgWidth) / canvas.width;
-  let heightLeft = imgHeight;
-  let position = 0;
-  pdf.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight);
-  heightLeft -= pageHeight;
-  while(heightLeft > 0){
-    position = heightLeft - imgHeight;
-    pdf.addPage();
-    pdf.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight);
-    heightLeft -= pageHeight;
+  const margin = 42;
+  const rightX = pageWidth - margin;
+  const bottomLimit = pageHeight - margin;
+  const INK = [31, 36, 33];
+  const INK_SOFT = [90, 95, 88];
+  const ACCENT = [27, 75, 67];
+  const LINE = [200, 193, 176];
+  let y = margin;
+  let onPageBreak = null;
+
+  function ensureSpace(needed){
+    if(y + needed > bottomLimit){
+      pdf.addPage();
+      y = margin;
+      if(onPageBreak) onPageBreak();
+    }
   }
+
+  // header: business identity (left) + invoice tag (right)
+  pdf.setFont('times', 'bold'); pdf.setFontSize(20); pdf.setTextColor(...INK);
+  pdf.text(state.bizName || 'Your business name', margin, y + 16);
+  pdf.setFont('helvetica', 'normal'); pdf.setFontSize(9); pdf.setTextColor(...INK);
+  let leftY = y + 34;
+  if(state.bizAddr){ pdf.text(state.bizAddr, margin, leftY); leftY += 14; }
+  if(state.bizContact){ pdf.text(state.bizContact, margin, leftY); leftY += 14; }
+
+  pdf.setFont('helvetica', 'normal'); pdf.setFontSize(8); pdf.setTextColor(...INK_SOFT);
+  pdf.text('INVOICE', rightX, y + 8, { align: 'right' });
+  pdf.setFont('courier', 'bold'); pdf.setFontSize(15); pdf.setTextColor(...ACCENT);
+  pdf.text(state.invNum || '', rightX, y + 26, { align: 'right' });
+
+  y = Math.max(leftY, y + 40) + 10;
+  pdf.setDrawColor(...INK); pdf.setLineWidth(1.2);
+  pdf.line(margin, y, rightX, y);
+  y += 26;
+
+  // billed by / billed to
+  const colWidth = (pageWidth - margin * 2 - 24) / 2;
+  const col2X = margin + colWidth + 24;
+  const startY = y;
+
+  pdf.setFont('helvetica', 'bold'); pdf.setFontSize(8); pdf.setTextColor(...INK_SOFT);
+  pdf.text('BILLED BY', margin, y);
+  pdf.text('BILLED TO', col2X, y);
+  let byY = y + 16, toY = y + 16;
+  pdf.setFont('helvetica', 'normal'); pdf.setFontSize(11); pdf.setTextColor(...INK);
+  [state.fromName, state.fromGSTless].filter(Boolean).forEach(line => { pdf.text(line, margin, byY); byY += 15; });
+  [state.toName, state.toAddr, state.toContact].filter(Boolean).forEach(line => { pdf.text(line, col2X, toY); toY += 15; });
+  y = Math.max(byY, toY, startY + 16) + 14;
+
+  // dates
+  pdf.setFont('helvetica', 'bold'); pdf.setFontSize(8); pdf.setTextColor(...INK_SOFT);
+  pdf.text('ISSUE DATE', margin, y);
+  pdf.text('DUE DATE', col2X, y);
+  y += 15;
+  pdf.setFont('helvetica', 'normal'); pdf.setFontSize(11); pdf.setTextColor(...INK);
+  pdf.text(state.issueDate || '', margin, y);
+  pdf.text(state.dueDate || '', col2X, y);
+  y += 20;
+  pdf.setDrawColor(...LINE); pdf.setLineWidth(0.75);
+  pdf.line(margin, y, rightX, y);
+  y += 22;
+
+  // line items table
+  const descX = margin;
+  const descWidth = pageWidth - margin * 2 - 190;
+  const qtyX = rightX - 170;
+  const rateX = rightX - 95;
+  const amtX = rightX;
+
+  function drawTableHeader(){
+    pdf.setFont('helvetica', 'bold'); pdf.setFontSize(8); pdf.setTextColor(...INK_SOFT);
+    pdf.text('DESCRIPTION', descX, y);
+    pdf.text('QTY', qtyX, y, { align: 'right' });
+    pdf.text('RATE', rateX, y, { align: 'right' });
+    pdf.text('AMOUNT', amtX, y, { align: 'right' });
+    y += 8;
+    pdf.setDrawColor(...INK); pdf.setLineWidth(1);
+    pdf.line(margin, y, rightX, y);
+    y += 16;
+  }
+
+  ensureSpace(60);
+  drawTableHeader();
+  onPageBreak = drawTableHeader;
+
+  let subtotal = 0;
+  state.items.forEach(it => {
+    const qty = parseFloat(it.qty) || 0;
+    const rate = parseFloat(it.rate) || 0;
+    const amount = qty * rate;
+    subtotal += amount;
+    pdf.setFont('helvetica', 'normal'); pdf.setFontSize(10);
+    const descLines = pdf.splitTextToSize(it.desc || '', descWidth);
+    const rowHeight = Math.max(descLines.length * 13, 13);
+
+    ensureSpace(rowHeight + 14);
+    pdf.setFont('helvetica', 'normal'); pdf.setFontSize(10); pdf.setTextColor(...INK);
+    pdf.text(descLines, descX, y);
+    pdf.setFont('courier', 'normal'); pdf.setFontSize(9);
+    pdf.text(String(qty), qtyX, y, { align: 'right' });
+    pdf.text(fmt(rate), rateX, y, { align: 'right' });
+    pdf.text(fmt(amount), amtX, y, { align: 'right' });
+
+    y += rowHeight + 8;
+    pdf.setDrawColor(...LINE); pdf.setLineWidth(0.5);
+    pdf.line(margin, y, rightX, y);
+    y += 16;
+  });
+  onPageBreak = null;
+
+  // totals — label is placed relative to the *measured* value width so it can
+  // never collide with the amount, regardless of how many digits or how wide
+  // the currency label/font gets.
+  function drawTotalRow(label, valueText, labelStyle, valueStyle){
+    pdf.setFont(valueStyle.font, valueStyle.weight); pdf.setFontSize(valueStyle.size);
+    const valueWidth = pdf.getTextWidth(valueText);
+    pdf.setTextColor(...valueStyle.color);
+    pdf.text(valueText, amtX, y, { align: 'right' });
+    pdf.setFont(labelStyle.font, labelStyle.weight); pdf.setFontSize(labelStyle.size);
+    pdf.setTextColor(...labelStyle.color);
+    pdf.text(label, amtX - valueWidth - 16, y, { align: 'right' });
+  }
+
+  const discount = parseFloat(state.discount) || 0;
+  const total = Math.max(subtotal - discount, 0);
+  ensureSpace(70);
+  drawTotalRow('Subtotal', pdfCurrency + fmt(subtotal),
+    { font: 'helvetica', weight: 'normal', size: 11, color: INK_SOFT },
+    { font: 'courier', weight: 'normal', size: 11, color: INK });
+  y += 20;
+  drawTotalRow('Discount', pdfCurrency + fmt(discount),
+    { font: 'helvetica', weight: 'normal', size: 11, color: INK_SOFT },
+    { font: 'courier', weight: 'normal', size: 11, color: INK });
+  y += 14;
+  pdf.setDrawColor(...INK); pdf.setLineWidth(1.2);
+  pdf.line(amtX - 200, y, rightX, y);
+  y += 24;
+  drawTotalRow('Total due', pdfCurrency + fmt(total),
+    { font: 'helvetica', weight: 'bold', size: 13, color: INK },
+    { font: 'times', weight: 'bold', size: 16, color: ACCENT });
+  y += 30;
+
+  // notes
+  if(state.notes){
+    ensureSpace(40);
+    pdf.setDrawColor(...LINE); pdf.setLineWidth(0.75);
+    pdf.line(margin, y, rightX, y);
+    y += 18;
+    pdf.setFont('helvetica', 'bold'); pdf.setFontSize(8); pdf.setTextColor(...INK_SOFT);
+    pdf.text('NOTES / PAYMENT TERMS', margin, y);
+    y += 14;
+    pdf.setFont('helvetica', 'normal'); pdf.setFontSize(10);
+    const noteLines = pdf.splitTextToSize(state.notes, pageWidth - margin * 2);
+    ensureSpace(noteLines.length * 13);
+    pdf.setTextColor(...INK);
+    pdf.text(noteLines, margin, y);
+  }
+
   return pdf.output('blob');
 }
 
@@ -833,14 +979,14 @@ async function handleDownloadPdf(event){
   const originalLabel = btn ? btn.textContent : null;
   if(btn){ btn.disabled = true; btn.textContent = 'Preparing PDF…'; }
   try{
-    if(typeof html2canvas === 'undefined' || typeof window.jspdf === 'undefined'){
+    if(typeof window.jspdf === 'undefined'){
       showToast('PDF library still loading — falling back to browser print.');
       window.print();
       return;
     }
     const state = getState();
     const filename = (state.invNum || 'invoice').replace(/[^a-z0-9-_]+/gi, '_') + '.pdf';
-    const blob = await generatePdfBlob();
+    const blob = generatePdfBlob();
 
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
