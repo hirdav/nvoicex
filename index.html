@@ -408,7 +408,7 @@
       <input type="number" id="discount" value="0" min="0" step="0.01" oninput="calcTotals()">
     </div>
     <div class="totals-row grand">
-      <label style="font-family:'Inter',sans-serif; font-size:14px; font-weight:600; color:var(--ink);">Total due</label>
+      <label style="font-family:'Inter',sans-serif; font-size:14px; font-weight:600; color:var(--ink);">Total</label>
       <span id="totalOut">0.00</span>
     </div>
   </div>
@@ -950,7 +950,7 @@ function generatePdfBlob(){
   pdf.setDrawColor(...INK); pdf.setLineWidth(1.2);
   pdf.line(amtX - 200, y, rightX, y);
   y += 24;
-  drawTotalRow('Total due', pdfCurrency + fmt(total),
+  drawTotalRow('Total', pdfCurrency + fmt(total),
     { font: 'helvetica', weight: 'bold', size: 13, color: INK },
     { font: 'times', weight: 'bold', size: 16, color: ACCENT });
   y += 30;
